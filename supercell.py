@@ -146,7 +146,7 @@ def super_linear(x, output_size, scope=None, reuse=False,
 
 class LayerNormLSTMCell(tf.nn.rnn_cell.RNNCell):
   """
-  Super-Layer-Norm, with Ortho Initialization and
+  Layer-Norm, with Ortho Initialization and
   Recurrent Dropout without Memory Loss.
 
   https://arxiv.org/abs/1607.06450 - Layer Norm
@@ -234,8 +234,13 @@ class LayerNormLSTMCell(tf.nn.rnn_cell.RNNCell):
 
 
 class HyperLSTMCell(tf.nn.rnn_cell.RNNCell):
-  # HyperLSTM, with Ortho Initialization,
-  # Layer Norm and Recurrent Dropout without Memory Loss.
+  '''
+  HyperLSTM, with Ortho Initialization,
+  Layer Norm and Recurrent Dropout without Memory Loss.
+  
+  https://arxiv.org/abs/1609.09106
+  http://blog.otoro.net/2016/09/28/hyper-networks/
+  '''
 
   def __init__(self, num_units, forget_bias=1.0,
     use_recurrent_dropout=False, dropout_keep_prob=0.90, use_layer_norm=True,
