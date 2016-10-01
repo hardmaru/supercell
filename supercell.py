@@ -334,8 +334,10 @@ class HyperLSTMCell(tf.nn.rnn_cell.RNNCell):
       h_size = self.num_units
       x_size = x.get_shape().as_list()[1]
 
-      batch_size = x.get_shape().as_list()[0]
-      self.hyper_state = tf.zeros([batch_size, self.hyper_cell.num_units*2])
+      # batch_size = x.get_shape().as_list()[0]
+      # self.hyper_state = tf.zeros([batch_size, self.hyper_cell.num_units*2])
+      # below fix doesn't require batch_size to be known at graph construction time.
+      self.hyper_state = self.hyper_cell.zero_state(x.get_shape()[0], dtype=tf.float32)
 
       # concatenate the input and hidden states for hyperlstm input
       hyper_input = tf.concat(1, [x, h])
