@@ -244,7 +244,8 @@ class HyperLSTMCell(tf.nn.rnn_cell.RNNCell):
 
   def __init__(self, num_units, forget_bias=1.0,
     use_recurrent_dropout=False, dropout_keep_prob=0.90, use_layer_norm=True,
-    hyper_num_units=128, hyper_embedding_size=4, hyper_use_recurrent_dropout=False):
+    hyper_num_units=128, hyper_embedding_size=4,
+    hyper_use_recurrent_dropout=False, hyper_higher_order=False):
     """Initialize the Layer Norm HyperLSTM cell.
 
     Args:
@@ -252,13 +253,18 @@ class HyperLSTMCell(tf.nn.rnn_cell.RNNCell):
       forget_bias: float, The bias added to forget gates (default 1.0).
       use_recurrent_dropout: float, Whether to use Recurrent Dropout (default False)
       dropout_keep_prob: float, dropout keep probability (default 0.90)
+      use_layer_norm: boolean. (default True)
+        Controls whether we use LayerNorm layers in main LSTM and HyperLSTM cell.
       hyper_num_units: int, number of units in HyperLSTM cell.
         (default is 128, recommend experimenting with 256 for larger tasks)
       hyper_embedding_size: int, size of signals emitted from HyperLSTM cell.
         (default is 4, recommend trying larger values but larger is not always better)
       hyper_use_recurrent_dropout: boolean. (default False)
-        Controls whether HyperLSTM cell also uses recurrent dropout.
+        Controls whether HyperLSTM cell also uses recurrent dropout. (Not in Paper.)
         Recommend turning this on only if hyper_num_units becomes very large (>= 512)
+      hyper_higher_order: boolean. (default False)
+        Controls whether the HyperLSTM cell is _also_ a HyperLSTM. (Not in Paper.)
+        This allows multiple levels of Meta Learning!
     """
     self.num_units = num_units
     self.forget_bias = forget_bias
@@ -268,14 +274,24 @@ class HyperLSTMCell(tf.nn.rnn_cell.RNNCell):
     self.hyper_num_units = hyper_num_units
     self.hyper_embedding_size = hyper_embedding_size
     self.hyper_use_recurrent_dropout = hyper_use_recurrent_dropout
+    self.hyper_higher_order = hyper_higher_order
 
-    if self.use_layer_norm:
-      cell_fn = LayerNormLSTMCell
+    if self.hyper_higher_order:
+      cell_fn = HyperLSTMCell
+      self.hyper_cell = cell_fn(hyper_num_units,
+        use_recurrent_dropout=hyper_use_recurrent_dropout,
+        dropout_keep_prob=dropout_keep_prob,
+        use_layer_norm=use_layer_norm,
+        hyper_use_recurrent_dropout=hyper_use_recurrent_dropout,
+        hyper_higher_order=False)
     else:
-      cell_fn = LSTMCell
-    self.hyper_cell = cell_fn(hyper_num_units,
-      use_recurrent_dropout=hyper_use_recurrent_dropout,
-      dropout_keep_prob=dropout_keep_prob)
+      if self.use_layer_norm:
+        cell_fn = LayerNormLSTMCell
+      else:
+        cell_fn = LSTMCell
+      self.hyper_cell = cell_fn(hyper_num_units,
+        use_recurrent_dropout=hyper_use_recurrent_dropout,
+        dropout_keep_prob=dropout_keep_prob)
 
   @property
   def input_size(self):
