@@ -18,9 +18,9 @@ def orthogonal(shape):
   q = u if u.shape == flat_shape else v
   return q.reshape(shape)
 def orthogonal_initializer(scale=1.0):
-  def _initializer(shape, dtype=tf.float32):
-    return tf.constant(orthogonal(shape)*scale, dtype)
-  return _initializer
+    def _initializer(shape, dtype=tf.float32, partition_info=None):
+        return tf.constant(orthogonal(shape) * scale, dtype)
+    return _initializer
 
 class LSTMCell(tf.nn.rnn_cell.RNNCell):
   '''
