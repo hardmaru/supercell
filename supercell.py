@@ -275,6 +275,8 @@ class HyperLSTMCell(tf.nn.rnn_cell.RNNCell):
     self.hyper_embedding_size = hyper_embedding_size
     self.hyper_use_recurrent_dropout = hyper_use_recurrent_dropout
 
+    self.total_num_units = self.num_units + self.hyper_num_units
+
     if self.use_layer_norm:
       cell_fn = LayerNormLSTMCell
     else:
@@ -298,8 +300,6 @@ class HyperLSTMCell(tf.nn.rnn_cell.RNNCell):
 
     with tf.variable_scope(type(self).__name__):
 
-      self.hyper_state = self.hyper_cell.zero_state(self.batch_size, dtype=tf.float32)
-
       self.W_xh = tf.get_variable('W_xh',
         [x_size, 4*self.num_units], initializer=w_init)
       self.W_hh = tf.get_variable('W_hh',
@@ -317,7 +317,7 @@ class HyperLSTMCell(tf.nn.rnn_cell.RNNCell):
 
   @property
   def state_size(self):
-    return 2 * self.num_units
+    return 2 * self.total_num_units
 
   def layer_norm(self, layer, scope="layer_norm"):
     # wrapper for layer_norm
@@ -349,7 +349,10 @@ class HyperLSTMCell(tf.nn.rnn_cell.RNNCell):
 
   def __call__(self, x, state, timestep = 0, scope=None):
     with tf.variable_scope(type(self).__name__):
-      h, c = tf.split(1, 2, state)
+      total_h, total_c = tf.split(1, 2, state)
+      h = total_h[:, 0:self.num_units]
+      c = total_c[:, 0:self.num_units]
+      self.hyper_state = tf.concat(1, [total_h[:,self.num_units:], total_c[:,self.num_units:]])
 
       # concatenate the input and hidden states for hyperlstm input
       hyper_input = tf.concat(1, [x, h])
@@ -396,5 +399,8 @@ class HyperLSTMCell(tf.nn.rnn_cell.RNNCell):
       new_c = c*tf.sigmoid(f+self.forget_bias) + tf.sigmoid(i)*g
       new_h = tf.tanh(self.layer_norm(new_c, 'ln_c')) * tf.sigmoid(o)
     
-    return new_h, tf.concat(1, [new_h, new_c])
-
+      hyper_h, hyper_c = tf.split(1, 2, hyper_new_state)
+      new_total_h = tf.concat(1, [new_h, hyper_h])
+      new_total_c = tf.concat(1, [new_c, hyper_c])
+      new_total_state = tf.concat(1, [new_total_h, new_total_c])
+    return new_h, new_total_state
