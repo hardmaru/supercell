@@ -242,7 +242,7 @@ class HyperLSTMCell(tf.nn.rnn_cell.RNNCell):
   http://blog.otoro.net/2016/09/28/hyper-networks/
   '''
 
-  def __init__(self, num_units, input_size=64, batch_size=128, forget_bias=1.0,
+  def __init__(self, num_units, input_size=64, forget_bias=1.0,
     use_recurrent_dropout=False, dropout_keep_prob=0.90, use_layer_norm=True,
     hyper_num_units=128, hyper_embedding_size=4,
     hyper_use_recurrent_dropout=False):
@@ -266,7 +266,6 @@ class HyperLSTMCell(tf.nn.rnn_cell.RNNCell):
     """
     self.num_units = num_units
     self._input_size = input_size
-    self.batch_size = batch_size
     self.forget_bias = forget_bias
     self.use_recurrent_dropout = use_recurrent_dropout
     self.dropout_keep_prob = dropout_keep_prob
