@@ -249,8 +249,7 @@ class HyperLSTMCell(tf.nn.rnn_cell.RNNCell):
     """Initialize the Layer Norm HyperLSTM cell.
     Args:
       num_units: int, The number of units in the LSTM cell.
-      input_size: int, The size of the input.
-      batch_size: int, Batch size of model.
+      input_size: int, The size of the input. (not inferred, although should be ...)
       forget_bias: float, The bias added to forget gates (default 1.0).
       use_recurrent_dropout: float, Whether to use Recurrent Dropout (default False)
       dropout_keep_prob: float, dropout keep probability (default 0.90)
@@ -265,6 +264,7 @@ class HyperLSTMCell(tf.nn.rnn_cell.RNNCell):
         Recommend turning this on only if hyper_num_units becomes very large (>= 512)
     """
     self.num_units = num_units
+    # some annoying legacy apps fk up when we infer input size, so I put it as requirement. feel free to modify.
     self._input_size = input_size
     self.forget_bias = forget_bias
     self.use_recurrent_dropout = use_recurrent_dropout
