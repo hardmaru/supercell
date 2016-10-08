@@ -264,7 +264,7 @@ class HyperLSTMCell(tf.nn.rnn_cell.RNNCell):
         Recommend turning this on only if hyper_num_units becomes very large (>= 512)
     """
     self.num_units = num_units
-    # some annoying legacy apps fk up when we infer input size, so I put it as requirement. feel free to modify.
+    # some annoying legacy apps fk up when we infer input size, so made it a requirement.
     self._input_size = input_size
     self.forget_bias = forget_bias
     self.use_recurrent_dropout = use_recurrent_dropout
