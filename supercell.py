@@ -74,10 +74,11 @@ class LSTMCell(tf.nn.rnn_cell.RNNCell):
       h_size = self.num_units
       x_size = x.get_shape().as_list()[1]
 
-      w_init=lstm_ortho_initializer(1.0)
+      #w_init=lstm_ortho_initializer(1.0)
+      #w_init=orthogonal_initializer(1.0)
       #w_init=tf.constant_initializer(0.0)
       #w_init=tf.random_normal_initializer(stddev=0.01)
-      #w_init=None # uniform
+      w_init=None # uniform
 
       h_init=lstm_ortho_initializer(1.0)
       #h_init=tf.constant_initializer(0.0)
@@ -214,10 +215,11 @@ class LayerNormLSTMCell(tf.nn.rnn_cell.RNNCell):
       h_size = self.num_units
       x_size = x.get_shape().as_list()[1]
 
-      w_init=lstm_ortho_initializer(1.0)
+      #w_init=lstm_ortho_initializer(1.0)
+      #w_init=orthogonal_initializer(1.0)
       #w_init=tf.constant_initializer(0.0)
       #w_init=tf.random_normal_initializer(stddev=0.01)
-      #w_init=None # uniform
+      w_init=None # uniform
 
       h_init=lstm_ortho_initializer(1.0)
       #h_init=tf.constant_initializer(0.0)
@@ -305,10 +307,11 @@ class HyperLSTMCell(tf.nn.rnn_cell.RNNCell):
       use_recurrent_dropout=hyper_use_recurrent_dropout,
       dropout_keep_prob=dropout_keep_prob)
 
-    w_init=lstm_ortho_initializer(1.0)
+    #w_init=lstm_ortho_initializer(1.0)
+    #w_init=orthogonal_initializer(1.0)
     #w_init=tf.constant_initializer(0.0)
     #w_init=tf.random_normal_initializer(stddev=0.01)
-    #w_init=None # uniform
+    w_init=None # uniform
 
     h_init=lstm_ortho_initializer(1.0)
     #h_init=tf.constant_initializer(0.0)
