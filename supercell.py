@@ -21,6 +21,27 @@ def orthogonal_initializer(scale=1.0):
   def _initializer(shape, dtype=tf.float32, partition_info=None):
     return tf.constant(orthogonal(shape) * scale, dtype)
   return _initializer
+def lstm_identity_initializer(scale=1.0):
+  def _initializer(shape, dtype=tf.float32, partition_info=None):
+    size = shape[0]
+    t = np.zeros(shape)
+    t[:, size:size * 2] = np.identity(size)*scale # gate (j) is identity
+    t[:, :size] = orthogonal([size, size])
+    t[:, size * 2:size * 3] = orthogonal([size, size])
+    t[:, size * 3:] = orthogonal([size, size])
+    return tf.constant(t, dtype)
+  return _initializer
+def lstm_ortho_initializer(scale=1.0):
+  def _initializer(shape, dtype=tf.float32, partition_info=None):
+    size_x = shape[0]
+    size_h = shape[1]/4 # assumes lstm.
+    t = np.zeros(shape)
+    t[:, :size_h] = orthogonal([size_x, size_h])*scale
+    t[:, size_h:size_h*2] = orthogonal([size_x, size_h])*scale
+    t[:, size_h*2:size_h*3] = orthogonal([size_x, size_h])*scale
+    t[:, size_h*3:] = orthogonal([size_x, size_h])*scale
+    return tf.constant(t, dtype)
+  return _initializer
 
 class LSTMCell(tf.nn.rnn_cell.RNNCell):
   '''
@@ -53,12 +74,12 @@ class LSTMCell(tf.nn.rnn_cell.RNNCell):
       h_size = self.num_units
       x_size = x.get_shape().as_list()[1]
 
-      w_init=orthogonal_initializer(1.0)
+      w_init=lstm_ortho_initializer(1.0)
       #w_init=tf.constant_initializer(0.0)
       #w_init=tf.random_normal_initializer(stddev=0.01)
       #w_init=None # uniform
 
-      h_init=orthogonal_initializer(1.0)
+      h_init=lstm_ortho_initializer(1.0)
       #h_init=tf.constant_initializer(0.0)
       #h_init=tf.random_normal_initializer(stddev=0.01)
       #h_init=None # uniform
@@ -134,7 +155,7 @@ def super_linear(x, output_size, scope=None, reuse=False,
     elif init_w == "gaussian":
       w_init=tf.random_normal_initializer(stddev=weight_start)
     elif init_w == "ortho":
-      w_init=orthogonal_initializer(1.0)
+      w_init=lstm_ortho_initializer(1.0)
 
     w = tf.get_variable("super_linear_w",
       [shape[1], output_size], tf.float32, initializer=w_init)
@@ -193,12 +214,12 @@ class LayerNormLSTMCell(tf.nn.rnn_cell.RNNCell):
       h_size = self.num_units
       x_size = x.get_shape().as_list()[1]
 
-      w_init=orthogonal_initializer(1.0)
+      w_init=lstm_ortho_initializer(1.0)
       #w_init=tf.constant_initializer(0.0)
       #w_init=tf.random_normal_initializer(stddev=0.01)
       #w_init=None # uniform
 
-      h_init=orthogonal_initializer(1.0)
+      h_init=lstm_ortho_initializer(1.0)
       #h_init=tf.constant_initializer(0.0)
       #h_init=tf.random_normal_initializer(stddev=0.01)
       #h_init=None # uniform
@@ -284,12 +305,12 @@ class HyperLSTMCell(tf.nn.rnn_cell.RNNCell):
       use_recurrent_dropout=hyper_use_recurrent_dropout,
       dropout_keep_prob=dropout_keep_prob)
 
-    w_init=orthogonal_initializer(1.0)
+    w_init=lstm_ortho_initializer(1.0)
     #w_init=tf.constant_initializer(0.0)
     #w_init=tf.random_normal_initializer(stddev=0.01)
     #w_init=None # uniform
 
-    h_init=orthogonal_initializer(1.0)
+    h_init=lstm_ortho_initializer(1.0)
     #h_init=tf.constant_initializer(0.0)
     #h_init=tf.random_normal_initializer(stddev=0.01)
     #h_init=None # uniform
