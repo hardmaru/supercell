@@ -391,11 +391,11 @@ class HyperLSTMCell(tf.nn.rnn_cell.RNNCell):
       x_size = x.get_shape().as_list()[1]
       self._input_size = x_size
 
-      w_init=lstm_ortho_initializer(1.0)
+      #w_init=lstm_ortho_initializer(1.0)
       #w_init=orthogonal_initializer(1.0)
       #w_init=tf.constant_initializer(0.0)
       #w_init=tf.random_normal_initializer(stddev=0.01)
-      #w_init=None # uniform
+      w_init=None # uniform
 
       h_init=lstm_ortho_initializer(1.0)
       #h_init=lstm_identity_initializer(1.0)
