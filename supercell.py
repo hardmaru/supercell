@@ -421,7 +421,6 @@ class HyperLSTMCell(tf.nn.rnn_cell.RNNCell):
       new_total_state = tf.concat(1, [new_total_h, new_total_c])
     return new_h, new_total_state
 
-
 class LayerNormRNNCell(tf.nn.rnn_cell.RNNCell):
   """
   Layer-Norm, with Ortho Initialization, vanilla RNN cell.
@@ -474,3 +473,106 @@ class LayerNormRNNCell(tf.nn.rnn_cell.RNNCell):
       new_h = self.activation(layer_norm(concat, 'ln_h'))
     
     return new_h, new_h
+
+class FastRNNCell(tf.nn.rnn_cell.RNNCell):
+  """
+  Layer-Norm, with Ortho Initialization, Fast RNN cell.
+  Alpha version, probably bugs, pls test and see if fixin' needed.
+  
+  Based on:
+  https://arxiv.org/abs/1610.06258
+  Assumes S = 1, that was my understanding. (pls write more clearly ...)
+
+  As usual, calling FastRNNCell will return two things: output, state
+  
+  output is the current hidden state of the RNN, dimensions batch_size x num_units
+  
+  state will be a packed tensor containing the previous max_history hidden states
+  the previous max_history will be scaled gradually by lambda factor.
+  
+  state's dimensions will be batch_size x [num_units * max_history]
+  
+  initially, all the previous history will be zeroed out.
+  """
+
+  def __init__(self, num_units, eta_factor=0.5, lambda_factor=0.95,
+               activation=tf.tanh, max_history=100):
+    """Initialize the FastRNN cell.
+    Args:
+      num_units: int, The number of units in the LSTM cell.
+      eta_factor: float, default 0.5
+      lambda_factor: float, default 0.95 (try to choose a better greek character next time that is not a python keyword...)
+      activation: default tf.tanh.  Feel free to try tf.nn.relu
+      max_history: int, default 100. Only considers up to previous [100] states
+    """
+    self.num_units = num_units
+    self.eta = eta_factor
+    self.lam = np.sqrt(lambda_factor) # sqrt to be consistent w/ the paper's def
+    self.activation = activation
+    self.max_history=max_history
+
+  @property
+  def input_size(self):
+    return self.num_units
+
+  @property
+  def output_size(self):
+    return self.num_units
+
+  @property
+  def state_size(self):
+    return self.max_history*self.num_units
+
+  def __call__(self, x, raw_state, timestep = 0, scope=None):
+    with tf.variable_scope(scope or type(self).__name__):
+      batch_size = x.get_shape().as_list()[0]
+      max_history = self.max_history
+      h_size = self.num_units
+      x_size = x.get_shape().as_list()[1]
+
+      state = tf.reshape(raw_state, [batch_size, max_history, h_size])
+      h = state[:, 0, :] # get most recent hidden state
+
+      state *= self.lam # decrease everything by the lambda factor
+
+
+      #w_init=orthogonal_initializer(1.0)
+      #w_init=tf.constant_initializer(0.0)
+      #w_init=tf.random_normal_initializer(stddev=0.01)
+      w_init=None # uniform
+
+      h_init=orthogonal_initializer(1.0)
+      #h_init=tf.constant_initializer(0.0)
+      #h_init=tf.random_normal_initializer(stddev=0.01)
+      #h_init=None # uniform
+
+      W_xh = tf.get_variable('W_xh',
+        [x_size, self.num_units], initializer=w_init)
+      W_hh = tf.get_variable('W_hh',
+        [self.num_units, self.num_units], initializer=h_init)
+      # no bias, since there's a bias thing inside layer norm
+      # and we don't wanna double task variables.
+
+      concat = tf.concat(1, [x, h]) # concat for speed.
+      W_full = tf.concat(0, [W_xh, W_hh])
+      h0 = tf.matmul(concat, W_full)
+      
+      h0 = tf.reshape(h0, [batch_size, 1, h_size])
+      
+      # sort of eq4, already scaled by sqrt(lambda_factor) in both lines
+      h1 = tf.batch_matmul(h0, tf.transpose(state, perm=[0, 2, 1]))
+      h1 = tf.batch_matmul(h1, state)
+
+      h0 = tf.reshape(h0, [batch_size, h_size])
+      h1 = tf.reshape(h1, [batch_size, h_size])
+
+      # combination of eq5 and eq4: (eq2 is inconsistent w/ eq5, wtf...)
+      new_h = self.activation(layer_norm(h0+self.eta*h1, 'ln_h'))
+      
+      state = tf.unpack(state, axis=1)
+      state = [new_h] + state # put in most recent state in the front
+      state = state[0:-1] # kick out the last hidden state
+      state = tf.pack(state, axis=1)
+      state = tf.reshape(state, [batch_size, max_history*h_size])
+    
+    return new_h, state
