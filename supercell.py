@@ -535,7 +535,6 @@ class FastRNNCell(tf.nn.rnn_cell.RNNCell):
 
       state *= self.lam # decrease everything by the lambda factor
 
-
       #w_init=orthogonal_initializer(1.0)
       #w_init=tf.constant_initializer(0.0)
       #w_init=tf.random_normal_initializer(stddev=0.01)
