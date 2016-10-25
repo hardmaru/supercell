@@ -495,8 +495,8 @@ class FastRNNCell(tf.nn.rnn_cell.RNNCell):
   initially, all the previous history will be zeroed out.
   """
 
-  def __init__(self, num_units, eta_factor=0.5, lambda_factor=0.95,
-               activation=tf.tanh, max_history=100):
+  def __init__(self, num_units, eta_factor=0.5, lambda_factor=0.90,
+               activation=tf.tanh, max_history=50):
     """Initialize the FastRNN cell.
     Args:
       num_units: int, The number of units in the LSTM cell.
@@ -533,7 +533,8 @@ class FastRNNCell(tf.nn.rnn_cell.RNNCell):
       state = tf.reshape(raw_state, [batch_size, max_history, h_size])
       h = state[:, 0, :] # get most recent hidden state
 
-      state *= self.lam # decrease everything by the lambda factor
+      state = self.lam*state # decrease everything by the lambda factor
+
 
       #w_init=orthogonal_initializer(1.0)
       #w_init=tf.constant_initializer(0.0)
@@ -565,13 +566,13 @@ class FastRNNCell(tf.nn.rnn_cell.RNNCell):
       h0 = tf.reshape(h0, [batch_size, h_size])
       h1 = tf.reshape(h1, [batch_size, h_size])
 
-      # combination of eq5 and eq4: (eq2 is inconsistent w/ eq5, wtf...)
+      # combination of eq2/eq5 and eq4:
       new_h = self.activation(layer_norm(h0+self.eta*h1, 'ln_h'))
-      
-      state = tf.unpack(state, axis=1)
-      state = [new_h] + state # put in most recent state in the front
-      state = state[0:-1] # kick out the last hidden state
-      state = tf.pack(state, axis=1)
+
+      h_insert = tf.reshape(new_h, [batch_size, 1, h_size])
+      state = tf.concat(1, [h_insert, state])  # put in most recent state in the front
+      state = state[:, 0:-1, :]  # kick out the last hidden state
+
       state = tf.reshape(state, [batch_size, max_history*h_size])
     
     return new_h, state
