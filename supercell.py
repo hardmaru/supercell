@@ -394,6 +394,105 @@ class HyperLSTMCell(tf.nn.rnn_cell.RNNCell):
       #w_init=lstm_ortho_initializer(1.0)
       #w_init=orthogonal_initializer(1.0)
       #w_init=tf.constant_initializer(0.0)
+class HyperLSTMCell(tf.nn.rnn_cell.RNNCell):
+  '''
+  HyperLSTM, with Ortho Initialization,
+  Layer Norm and Recurrent Dropout without Memory Loss.
+  
+  https://arxiv.org/abs/1609.09106
+  http://blog.otoro.net/2016/09/28/hyper-networks/
+  '''
+
+  def __init__(self, num_units, forget_bias=1.0,
+    use_recurrent_dropout=False, dropout_keep_prob=0.90, use_layer_norm=True,
+    hyper_num_units=64, hyper_embedding_size=4,
+    hyper_use_recurrent_dropout=False):
+    """Initialize the Layer Norm HyperLSTM cell.
+    Args:
+      num_units: int, The number of units in the LSTM cell.
+      forget_bias: float, The bias added to forget gates (default 1.0).
+      use_recurrent_dropout: float, Whether to use Recurrent Dropout (default False)
+      dropout_keep_prob: float, dropout keep probability (default 0.90)
+      use_layer_norm: boolean. (default True)
+        Controls whether we use LayerNorm layers in main LSTM and HyperLSTM cell.
+      hyper_num_units: int, number of units in HyperLSTM cell.
+        (default is 128, recommend experimenting with 256 for larger tasks)
+      hyper_embedding_size: int, size of signals emitted from HyperLSTM cell.
+        (default is 4, recommend trying larger values but larger is not always better)
+      hyper_use_recurrent_dropout: boolean. (default False)
+        Controls whether HyperLSTM cell also uses recurrent dropout. (Not in Paper.)
+        Recommend turning this on only if hyper_num_units becomes very large (>= 512)
+    """
+    self.num_units = num_units
+    self.forget_bias = forget_bias
+    self.use_recurrent_dropout = use_recurrent_dropout
+    self.dropout_keep_prob = dropout_keep_prob
+    self.use_layer_norm = use_layer_norm
+    self.hyper_num_units = hyper_num_units
+    self.hyper_embedding_size = hyper_embedding_size
+    self.hyper_use_recurrent_dropout = hyper_use_recurrent_dropout
+
+    self.total_num_units = self.num_units + self.hyper_num_units
+
+    if self.use_layer_norm:
+      cell_fn = LayerNormLSTMCell
+    else:
+      cell_fn = LSTMCell
+    self.hyper_cell = cell_fn(hyper_num_units,
+      use_recurrent_dropout=hyper_use_recurrent_dropout,
+      dropout_keep_prob=dropout_keep_prob)
+
+  @property
+  def input_size(self):
+    return self._input_size
+
+  @property
+  def output_size(self):
+    return self.num_units
+
+  @property
+  def state_size(self):
+    return 2*self.total_num_units
+
+  def layer_norm(self, layer, scope="layer_norm"):
+    # wrapper for layer_norm
+    if self.use_layer_norm:
+      return layer_norm(layer, scope)
+    else:
+      return layer
+
+  def hyper_norm(self, layer, scope="hyper", use_bias=True):
+    num_units = self.num_units
+    embedding_size = self.hyper_embedding_size
+    # recurrent batch norm init trick (https://arxiv.org/abs/1603.09025).
+    init_gamma = 0.10 # cooijmans' da man.
+    with tf.variable_scope(scope):
+      zw = super_linear(self.hyper_output, embedding_size, init_w="constant",
+        weight_start=0.00, use_bias=True, bias_start=1.0, scope="zw")
+      alpha = super_linear(zw, num_units, init_w="constant",
+        weight_start=init_gamma / embedding_size, use_bias=False, scope="alpha")
+      result = tf.mul(alpha, layer)
+      if use_bias:
+        zb = super_linear(self.hyper_output, embedding_size, init_w="gaussian",
+          weight_start=0.01, use_bias=False, bias_start=0.0, scope="zb")
+        beta = super_linear(zb, num_units, init_w="constant",
+          weight_start=0.00, use_bias=False, scope="beta")
+        result = result + beta
+    return result
+
+  def __call__(self, x, state, timestep = 0, scope=None):
+    with tf.variable_scope(scope or type(self).__name__):
+      total_h, total_c = tf.split(1, 2, state)
+      h = total_h[:, 0:self.num_units]
+      c = total_c[:, 0:self.num_units]
+      self.hyper_state = tf.concat(1, [total_h[:,self.num_units:], total_c[:,self.num_units:]])
+
+      x_size = x.get_shape().as_list()[1]
+      self._input_size = x_size
+
+      #w_init=lstm_ortho_initializer(1.0)
+      #w_init=orthogonal_initializer(1.0)
+      #w_init=tf.constant_initializer(0.0)
       #w_init=tf.random_normal_initializer(stddev=0.01)
       w_init=None # uniform
 
@@ -434,7 +533,7 @@ class HyperLSTMCell(tf.nn.rnn_cell.RNNCell):
       oh = self.hyper_norm(oh, 'hyper_oh', use_bias=True)
 
       # split bias
-      ib, jb, fb, ob = tf.split(0, 4, self.bias) # bias is to be broadcasted.
+      ib, jb, fb, ob = tf.split(0, 4, bias) # bias is to be broadcasted.
 
       # i = input_gate, j = new_input, f = forget_gate, o = output_gate
       i = ix + ih + ib
