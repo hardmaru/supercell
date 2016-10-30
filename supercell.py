@@ -496,24 +496,19 @@ class FastRNNCell(tf.nn.rnn_cell.RNNCell):
   """
 
   def __init__(self, num_units, eta_factor=0.5, lambda_factor=0.90,
-               activation=tf.tanh, max_history=50):
+               inner_steps=1):
     """Initialize the FastRNN cell.
     Args:
-      num_units: int, The number of units in the LSTM cell.
+      num_units: int, The number of units in the FastRNN cell.
       eta_factor: float, default 0.5
-      lambda_factor: float, default 0.95 (try to choose a better greek character next time that is not a python keyword...)
-      activation: default tf.tanh.  Feel free to try tf.nn.relu
-      max_history: int, default 100. Only considers up to previous [100] states
+      lambda_factor: float, default 0.90 (try to choose a better greek character next time that is not a python keyword...)
+      activation: default tf.nn.relu
+      inner_steps: int, default 1. The number of inner steps (hyperparameter S in the paper)
     """
     self.num_units = num_units
     self.eta = eta_factor
-    self.lam = np.sqrt(lambda_factor) # sqrt to be consistent w/ the paper's def
-    self.activation = activation
-    self.max_history=max_history
-
-  @property
-  def input_size(self):
-    return self.num_units
+    self.lam = lambda_factor # sqrt to be consistent w/ the paper's def
+    self.inner_steps = inner_steps
 
   @property
   def output_size(self):
@@ -521,58 +516,42 @@ class FastRNNCell(tf.nn.rnn_cell.RNNCell):
 
   @property
   def state_size(self):
-    return self.max_history*self.num_units
+    """
+    The states are h(t) and a(t).
+    :return:
+    """
+    return tf.nn.rnn_cell.LSTMStateTuple(self.num_units, self.num_units * self.num_units)
 
   def __call__(self, x, raw_state, timestep = 0, scope=None):
     with tf.variable_scope(scope or type(self).__name__):
-      batch_size = x.get_shape().as_list()[0]
-      max_history = self.max_history
+      batch_size = tf.shape(x)[0]
       h_size = self.num_units
       x_size = x.get_shape().as_list()[1]
 
-      state = tf.reshape(raw_state, [batch_size, max_history, h_size])
-      h = state[:, 0, :] # get most recent hidden state
+      w = tf.Variable(initial_value = 0.05 * np.identity(h_size), dtype=tf.float32)
+      c = tf.Variable(tf.random_uniform([100, h_size], -np.sqrt(h_size), np.sqrt(h_size)), dtype=tf.float32)
+      g = tf.Variable(tf.ones([1, h_size]), dtype=tf.float32)
+      b = tf.Variable(tf.zeros([1, h_size]), dtype=tf.float32)
+      h, a = raw_state
+      a = tf.reshape(a, tf.pack([batch_size, h_size, h_size]))
+      # compute h(t) and a(t). do we need layer norm here?
+      h = tf.nn.relu(
+        tf.matmul(h, w) + tf.matmul(x, c)
+      )
+      hs = tf.reshape(h, tf.pack([batch_size, 1, h_size]))
+      a = tf.add(
+        self.lam * a,
+        self.eta * tf.batch_matmul(tf.transpose(hs, [0, 2, 1]), hs)
+      )
 
-      state = self.lam*state # decrease everything by the lambda factor
-
-
-      #w_init=orthogonal_initializer(1.0)
-      #w_init=tf.constant_initializer(0.0)
-      #w_init=tf.random_normal_initializer(stddev=0.01)
-      w_init=None # uniform
-
-      h_init=orthogonal_initializer(1.0)
-      #h_init=tf.constant_initializer(0.0)
-      #h_init=tf.random_normal_initializer(stddev=0.01)
-      #h_init=None # uniform
-
-      W_xh = tf.get_variable('W_xh',
-        [x_size, self.num_units], initializer=w_init)
-      W_hh = tf.get_variable('W_hh',
-        [self.num_units, self.num_units], initializer=h_init)
-      # no bias, since there's a bias thing inside layer norm
-      # and we don't wanna double task variables.
-
-      concat = tf.concat(1, [x, h]) # concat for speed.
-      W_full = tf.concat(0, [W_xh, W_hh])
-      h0 = tf.matmul(concat, W_full)
-      
-      h0 = tf.reshape(h0, [batch_size, 1, h_size])
-      
-      # sort of eq4, already scaled by sqrt(lambda_factor) in both lines
-      h1 = tf.batch_matmul(h0, tf.transpose(state, perm=[0, 2, 1]))
-      h1 = tf.batch_matmul(h1, state)
-
-      h0 = tf.reshape(h0, [batch_size, h_size])
-      h1 = tf.reshape(h1, [batch_size, h_size])
-
-      # combination of eq2/eq5 and eq4:
-      new_h = self.activation(layer_norm(h0+self.eta*h1, 'ln_h'))
-
-      h_insert = tf.reshape(new_h, [batch_size, 1, h_size])
-      state = tf.concat(1, [h_insert, state])  # put in most recent state in the front
-      state = state[:, 0:-1, :]  # kick out the last hidden state
-
-      state = tf.reshape(state, [batch_size, max_history*h_size])
-    
-    return new_h, state
+      for i in range(0, self.inner_steps):
+        hs = tf.add(
+          tf.reshape(tf.matmul(h, w) + tf.matmul(x, c), tf.pack([batch_size, 1, h_size])),
+          tf.batch_matmul(hs, a)
+        )
+        mu = tf.reduce_mean(hs, reduction_indices=0)
+        sig = tf.sqrt(tf.reduce_mean(tf.square(hs), reduction_indices=0))
+        hs = tf.nn.relu(tf.div(tf.mul(g, (hs - mu)), sig) + b)
+      h = tf.reshape(hs, tf.pack([batch_size, h_size]))
+      a = tf.reshape(a, tf.pack([batch_size, h_size * h_size]))
+    return h, tf.nn.rnn_cell.LSTMStateTuple(h, a)
