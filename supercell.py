@@ -111,35 +111,18 @@ class LSTMCell(tf.nn.rnn_cell.RNNCell):
 
       return new_h, tf.concat(1, [new_c, new_h]) # fuk tuples.
 
-# support functions for layer norm
-def moments_for_layer_norm(x, axes=1, name=None):
-  #output for mean and variance should be [batch_size]
-  # from https://github.com/LeavesBreathe/tensorflow_with_latest_papers
-  epsilon = 1e-3 # found this works best.
-  if not isinstance(axes, list): axes = list(axes)
-  with tf.op_scope([x, axes], name, "moments"):
-    mean = tf.reduce_mean(x, axes, keep_dims=True)
-    variance = tf.sqrt(tf.reduce_mean(tf.square(x-mean), axes, keep_dims=True)+epsilon)
-    return mean, variance
-
-def layer_norm(input_tensor, scope="layer_norm", alpha_start=1.0, bias_start=0.0, reuse=False):
-  # derived from:
-  # https://github.com/LeavesBreathe/tensorflow_with_latest_papers, but simplified.
+def layer_norm(x, scope="layer_norm", reuse=False, alpha_start=1.0, bias_start=0.0, epsilon = 1e-3):
+  axes = [1]
+  mean = tf.reduce_mean(x, axes, keep_dims=True)
+  std = tf.sqrt(tf.reduce_mean(tf.square(x-mean), axes, keep_dims=True)+epsilon)
+  x_shape_list = x.get_shape().as_list()
+  num_units = x_shape_list[1]
   with tf.variable_scope(scope):
     if reuse == True:
       tf.get_variable_scope().reuse_variables()
-    input_tensor_shape_list = input_tensor.get_shape().as_list()
-    num_units = input_tensor_shape_list[1]
-
-    alpha = tf.get_variable('layer_norm_alpha', [num_units],
-      initializer=tf.constant_initializer(alpha_start))
-    bias = tf.get_variable('layer_norm_bias', [num_units],
-      initializer=tf.constant_initializer(bias_start))
-
-    mean, variance = moments_for_layer_norm(input_tensor,
-      axes=[1], name = "moments_"+scope)
-    output = (alpha * (input_tensor-mean))/(variance)+bias
-
+    alpha = tf.get_variable('ln_alpha', [num_units], initializer=tf.constant_initializer(alpha_start))
+    bias = tf.get_variable('ln_bias', [num_units], initializer=tf.constant_initializer(bias_start))
+  output = (alpha*(x-mean))/(std)+bias
   return output
 
 def super_linear(x, output_size, scope=None, reuse=False,
