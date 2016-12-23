@@ -238,7 +238,10 @@ class LSTMCell(tf.contrib.rnn.RNNCell):
         g = tf.tanh(j) 
 
       new_c = c*tf.sigmoid(f+self.forget_bias) + tf.sigmoid(i)*g
-      new_h = tf.tanh(new_c) * tf.sigmoid(o)
+      if self.use_layer_norm:
+        new_h = tf.tanh(layer_norm(new_c, self.num_units, 'ln_c')) * tf.sigmoid(o)
+      else:
+        new_h = tf.tanh(new_c) * tf.sigmoid(o)
     
     return new_h, tf.contrib.rnn.LSTMStateTuple(new_c, new_h)
 
