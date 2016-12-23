@@ -19,20 +19,7 @@ def orthogonal(shape):
   u, _, v = np.linalg.svd(a, full_matrices=False)
   q = u if u.shape == flat_shape else v
   return q.reshape(shape)
-def orthogonal_initializer(scale=1.0):
-  def _initializer(shape, dtype=tf.float32, partition_info=None):
-    return tf.constant(orthogonal(shape) * scale, dtype)
-  return _initializer
-def lstm_identity_initializer(scale=1.0):
-  def _initializer(shape, dtype=tf.float32, partition_info=None):
-    size = shape[0]
-    t = np.zeros(shape)
-    t[:, size:size * 2] = np.identity(size)*scale # gate (j) is identity
-    t[:, :size] = orthogonal([size, size])
-    t[:, size * 2:size * 3] = orthogonal([size, size])
-    t[:, size * 3:] = orthogonal([size, size])
-    return tf.constant(t, dtype)
-  return _initializer
+
 def lstm_ortho_initializer(scale=1.0):
   def _initializer(shape, dtype=tf.float32, partition_info=None):
     size_x = shape[0]
@@ -45,88 +32,61 @@ def lstm_ortho_initializer(scale=1.0):
     return tf.constant(t, dtype)
   return _initializer
 
-class LSTMCell(tf.nn.rnn_cell.RNNCell):
-  '''
-  Vanilla LSTM with ortho initializer,
-  and also recurrent dropout without memory loss
-  (https://arxiv.org/abs/1603.05118)
-  derived from
-  https://github.com/OlavHN/bnlstm
-  https://github.com/LeavesBreathe/tensorflow_with_latest_papers
-  '''
-  def __init__(self, num_units, forget_bias=1.0,
-    use_recurrent_dropout=False, dropout_keep_prob=0.9):
-    self.num_units = num_units
-    self.forget_bias=forget_bias
-    self.use_recurrent_dropout=use_recurrent_dropout
-    self.dropout_keep_prob=dropout_keep_prob
+def layer_norm_all_op_get_var(num_units, base, scope='ln_gamma'):
+  return tf.get_variable(scope, [base*num_units], initializer=tf.constant_initializer(1.0))
 
-  @property
-  def state_size(self):
-    return 2 * self.num_units
+@function.Defun(*[tf.float32] * 2 + [tf.int32]*3, func_name='layer_norm_all_op')
+def layer_norm_all_op(h, gamma, batch_size, base, num_units):
+  # Layer Norm (faster version)
+  #
+  # Performas layer norm on multiple base at once (ie, i, g, j, o for lstm)
+  #
+  # Reshapes h in to perform layer norm in parallel
+  h_reshape = tf.reshape(h, [batch_size, base, num_units])
+  mean = tf.reduce_mean(h_reshape, [2], keep_dims=True)
+  var = tf.reduce_mean(tf.square(h_reshape - mean), [2], keep_dims=True)
+  epsilon = tf.constant(1e-3)
+  rstd = tf.rsqrt(var + epsilon)
+  h_reshape = (h_reshape - mean) * rstd
+  # reshape back to original
+  h = tf.reshape(h_reshape, [batch_size, base * num_units])
+  return gamma * h
 
-  @property
-  def output_size(self):
-    return self.num_units
-
-  def __call__(self, x, state, scope=None):
-    with tf.variable_scope(scope or type(self).__name__):
-      c, h = tf.split(1, 2, state)
-
-      h_size = self.num_units
-      x_size = x.get_shape().as_list()[1]
-
-      #w_init=lstm_ortho_initializer(1.0)
-      #w_init=orthogonal_initializer(1.0)
-      #w_init=tf.constant_initializer(0.0)
-      #w_init=tf.random_normal_initializer(stddev=0.01)
-      w_init=None # uniform
-
-      h_init=lstm_ortho_initializer(1.0)
-      #h_init=tf.constant_initializer(0.0)
-      #h_init=tf.random_normal_initializer(stddev=0.01)
-      #h_init=None # uniform
-
-      # Keep W_xh and W_hh separate here as well to use different initialization methods
-      W_xh = tf.get_variable('W_xh',
-        [x_size, 4 * self.num_units], initializer=w_init)
-      W_hh = tf.get_variable('W_hh',
-        [self.num_units, 4 * self.num_units], initializer=h_init)
-      bias = tf.get_variable('bias',
-        [4 * self.num_units], initializer=tf.constant_initializer(0.0))
-
-      concat = tf.concat(1, [x, h])
-      W_full = tf.concat(0, [W_xh, W_hh])
-      hidden = tf.matmul(concat, W_full) + bias
-
-      i, j, f, o = tf.split(1, 4, hidden)
-
-      if self.use_recurrent_dropout:
-        g = tf.nn.dropout(tf.tanh(j), self.dropout_keep_prob)
-      else:
-        g = tf.tanh(j) 
-
-      new_c = c*tf.sigmoid(f+self.forget_bias) + tf.sigmoid(i)*g
-      new_h = tf.tanh(new_c) * tf.sigmoid(o)
-
-      return new_h, tf.concat(1, [new_c, new_h]) # fuk tuples.
-
-def layer_norm(x, scope="layer_norm", reuse=False, alpha_start=1.0, bias_start=0.0, epsilon = 1e-3):
-  axes = [1]
-  mean = tf.reduce_mean(x, axes, keep_dims=True)
-  std = tf.sqrt(tf.reduce_mean(tf.square(x-mean), axes, keep_dims=True)+epsilon)
-  x_shape_list = x.get_shape().as_list()
-  num_units = x_shape_list[1]
+def layer_norm_all(h, batch_size, base, num_units, scope="layer_norm", reuse=False, gamma_start=1.0, epsilon = 1e-3):
+  # Layer Norm (faster version, but not using defun)
+  #
+  # Performas layer norm on multiple base at once (ie, i, g, j, o for lstm)
+  #
+  # Reshapes h in to perform layer norm in parallel
+  h_reshape = tf.reshape(h, [batch_size, base, num_units])
+  mean = tf.reduce_mean(h_reshape, [2], keep_dims=True)
+  var = tf.reduce_mean(tf.square(h_reshape - mean), [2], keep_dims=True)
+  epsilon = tf.constant(epsilon)
+  rstd = tf.rsqrt(var + epsilon)
+  h_reshape = (h_reshape - mean) * rstd
+  # reshape back to original
+  h = tf.reshape(h_reshape, [batch_size, base * num_units])
   with tf.variable_scope(scope):
     if reuse == True:
       tf.get_variable_scope().reuse_variables()
-    alpha = tf.get_variable('ln_alpha', [num_units], initializer=tf.constant_initializer(alpha_start))
-    bias = tf.get_variable('ln_bias', [num_units], initializer=tf.constant_initializer(bias_start))
-  output = (alpha*(x-mean))/(std)+bias
+    gamma = tf.get_variable('ln_gamma', [4*num_units], initializer=tf.constant_initializer(gamma_start))
+  return gamma * h
+
+def layer_norm(x, num_units, scope="layer_norm", reuse=False, gamma_start=1.0, epsilon = 1e-3):
+  axes = [1]
+  mean = tf.reduce_mean(x, axes, keep_dims=True)
+  x_shifted = x-mean
+  var = tf.reduce_mean(tf.square(x_shifted), axes, keep_dims=True)
+  inv_std = tf.rsqrt(var + epsilon)
+  with tf.variable_scope(scope):
+    if reuse == True:
+      tf.get_variable_scope().reuse_variables()
+    gamma = tf.get_variable('ln_gamma', [num_units], initializer=tf.constant_initializer(gamma_start))
+  output = gamma*(x_shifted)*inv_std
   return output
 
 def super_linear(x, output_size, scope=None, reuse=False,
-  init_w="ortho", weight_start=0.0, use_bias=True, bias_start=0.0):
+  init_w="ortho", weight_start=0.0, use_bias=True, bias_start=0.0, input_size=None):
   # support function doing linear operation.  uses ortho initializer defined earlier.
   shape = x.get_shape().as_list()
   with tf.variable_scope(scope or "linear"):
@@ -134,7 +94,10 @@ def super_linear(x, output_size, scope=None, reuse=False,
       tf.get_variable_scope().reuse_variables()
 
     w_init = None # uniform
-    x_size = shape[1]
+    if input_size == None:
+      x_size = shape[1]
+    else:
+      x_size = input_size
     h_size = output_size
     if init_w == "zeros":
       w_init=tf.constant_initializer(0.0)
@@ -146,32 +109,69 @@ def super_linear(x, output_size, scope=None, reuse=False,
       w_init=lstm_ortho_initializer(1.0)
 
     w = tf.get_variable("super_linear_w",
-      [shape[1], output_size], tf.float32, initializer=w_init)
+      [x_size, output_size], tf.float32, initializer=w_init)
     if use_bias:
       b = tf.get_variable("super_linear_b", [output_size], tf.float32,
         initializer=tf.constant_initializer(bias_start))
       return tf.matmul(x, w) + b
     return tf.matmul(x, w)
 
-class LayerNormLSTMCell(tf.nn.rnn_cell.RNNCell):
+def hyper_norm(layer, hyper_output, embedding_size, num_units,
+               scope="hyper", use_bias=True):
+  '''
+  HyperNetwork norm operator
+  
+  provides context-dependent weights
+
+  layer: layer to apply operation on
+  hyper_output: output of the hypernetwork cell at time t
+  embedding_size: embedding size of the output vector (see paper)
+  num_units: number of hidden units in main rnn
+  '''
+  # recurrent batch norm init trick (https://arxiv.org/abs/1603.09025).
+  init_gamma = 0.10 # cooijmans' da man.
+  with tf.variable_scope(scope):
+    zw = super_linear(hyper_output, embedding_size, init_w="constant",
+      weight_start=0.00, use_bias=True, bias_start=1.0, scope="zw")
+    alpha = super_linear(zw, num_units, init_w="constant",
+      weight_start=init_gamma / embedding_size, use_bias=False, scope="alpha")
+    result = tf.mul(alpha, layer)
+  return result
+
+def hyper_bias(layer, hyper_output, embedding_size, num_units,
+               scope="hyper"):
+  '''
+  HyperNetwork norm operator
+  
+  provides context-dependent bias
+
+  layer: layer to apply operation on
+  hyper_output: output of the hypernetwork cell at time t
+  embedding_size: embedding size of the output vector (see paper)
+  num_units: number of hidden units in main rnn
+  '''
+
+  with tf.variable_scope(scope):
+    zb = super_linear(hyper_output, embedding_size, init_w="gaussian",
+      weight_start=0.01, use_bias=False, bias_start=0.0, scope="zb")
+    beta = super_linear(zb, num_units, init_w="constant",
+      weight_start=0.00, use_bias=False, scope="beta")
+  return layer + beta
+  
+class LSTMCell(tf.contrib.rnn.RNNCell):
   """
   Layer-Norm, with Ortho Initialization and
   Recurrent Dropout without Memory Loss.
-
   https://arxiv.org/abs/1607.06450 - Layer Norm
-
   https://arxiv.org/abs/1603.05118 - Recurrent Dropout without Memory Loss
-
   derived from
   https://github.com/OlavHN/bnlstm
   https://github.com/LeavesBreathe/tensorflow_with_latest_papers
-
   """
 
-  def __init__(self, num_units, forget_bias=1.0,
+  def __init__(self, num_units, batch_size=1, input_size=1, forget_bias=1.0, use_layer_norm=False,
     use_recurrent_dropout=False, dropout_keep_prob=0.90):
     """Initialize the Layer Norm LSTM cell.
-
     Args:
       num_units: int, The number of units in the LSTM cell.
       forget_bias: float, The bias added to forget gates (default 1.0).
@@ -180,12 +180,15 @@ class LayerNormLSTMCell(tf.nn.rnn_cell.RNNCell):
     """
     self.num_units = num_units
     self.forget_bias = forget_bias
+    self.use_layer_norm = use_layer_norm
     self.use_recurrent_dropout = use_recurrent_dropout
     self.dropout_keep_prob = dropout_keep_prob
+    self.batch_size = batch_size
+    self._input_size = input_size
 
   @property
   def input_size(self):
-    return self.num_units
+    return self._input_size
 
   @property
   def output_size(self):
@@ -193,44 +196,41 @@ class LayerNormLSTMCell(tf.nn.rnn_cell.RNNCell):
 
   @property
   def state_size(self):
-    return 2 * self.num_units
+    return tf.contrib.rnn.LSTMStateTuple(self.num_units, self.num_units)
 
-  def __call__(self, x, state, timestep = 0, scope=None):
+  def __call__(self, x, state, scope=None):
     with tf.variable_scope(scope or type(self).__name__):  # "BasicLSTMCell"
-      h, c = tf.split(1, 2, state)
+      c, h = state
 
       h_size = self.num_units
-      x_size = x.get_shape().as_list()[1]
-
-      #w_init=lstm_ortho_initializer(1.0)
-      #w_init=orthogonal_initializer(1.0)
-      #w_init=tf.constant_initializer(0.0)
-      #w_init=tf.random_normal_initializer(stddev=0.01)
+      
+      batch_size = self.batch_size
+      x_size = self._input_size
+      
       w_init=None # uniform
 
-      h_init=lstm_ortho_initializer(1.0)
-      #h_init=tf.constant_initializer(0.0)
-      #h_init=tf.random_normal_initializer(stddev=0.01)
-      #h_init=None # uniform
+      h_init=lstm_ortho_initializer()
 
       W_xh = tf.get_variable('W_xh',
         [x_size, 4 * self.num_units], initializer=w_init)
-      W_hh = tf.get_variable('W_hh',
-        [self.num_units, 4 * self.num_units], initializer=h_init)
-      # no bias, since there's a bias thing inside layer norm
-      # and we don't wanna double task variables.
 
-      concat = tf.concat(1, [x, h]) # concat for speed.
-      W_full = tf.concat(0, [W_xh, W_hh])
-      concat = tf.matmul(concat, W_full) #+ bias # live life without garbage.
+      W_hh = tf.get_variable('W_hh_i',
+        [self.num_units, 4*self.num_units], initializer=h_init)
+
+      W_full = tf.concat_v2([W_xh, W_hh], 0)
+
+      bias = tf.get_variable('bias',
+        [4 * self.num_units], initializer=tf.constant_initializer(0.0))
+
+      concat = tf.concat_v2([x, h], 1) # concat for speed.
+      concat = tf.matmul(concat, W_full) + bias
+      
+      # new way of doing layer norm (faster)
+      if self.use_layer_norm:
+        concat = layer_norm_all(concat, batch_size, 4, self.num_units, 'ln')
 
       # i = input_gate, j = new_input, f = forget_gate, o = output_gate
-      i, j, f, o = tf.split(1, 4, concat)
-
-      i = layer_norm(i, 'ln_i')
-      j = layer_norm(j, 'ln_j')
-      f = layer_norm(f, 'ln_f')
-      o = layer_norm(o, 'ln_o')
+      i, j, f, o = tf.split(concat, 4, 1)
 
       if self.use_recurrent_dropout:
         g = tf.nn.dropout(tf.tanh(j), self.dropout_keep_prob)
@@ -238,24 +238,23 @@ class LayerNormLSTMCell(tf.nn.rnn_cell.RNNCell):
         g = tf.tanh(j) 
 
       new_c = c*tf.sigmoid(f+self.forget_bias) + tf.sigmoid(i)*g
-      new_h = tf.tanh(layer_norm(new_c, 'ln_c')) * tf.sigmoid(o)
+      new_h = tf.tanh(new_c) * tf.sigmoid(o)
     
-    return new_h, tf.concat(1, [new_h, new_c])
+    return new_h, tf.contrib.rnn.LSTMStateTuple(new_c, new_h)
 
-class HyperLSTMCell(tf.nn.rnn_cell.RNNCell):
+class HyperLSTMCell(tf.contrib.rnn.RNNCell):
   '''
   HyperLSTM, with Ortho Initialization,
   Layer Norm and Recurrent Dropout without Memory Loss.
   
   https://arxiv.org/abs/1609.09106
-  http://blog.otoro.net/2016/09/28/hyper-networks/
   '''
 
-  def __init__(self, num_units, forget_bias=1.0,
+  def __init__(self, num_units, batch_size=1, input_size=1, forget_bias=1.0,
     use_recurrent_dropout=False, dropout_keep_prob=0.90, use_layer_norm=True,
-    hyper_num_units=64, hyper_embedding_size=4,
+    hyper_num_units=128, hyper_embedding_size=16,
     hyper_use_recurrent_dropout=False):
-    """Initialize the Layer Norm HyperLSTM cell.
+    '''Initialize the Layer Norm HyperLSTM cell.
     Args:
       num_units: int, The number of units in the LSTM cell.
       forget_bias: float, The bias added to forget gates (default 1.0).
@@ -270,7 +269,7 @@ class HyperLSTMCell(tf.nn.rnn_cell.RNNCell):
       hyper_use_recurrent_dropout: boolean. (default False)
         Controls whether HyperLSTM cell also uses recurrent dropout. (Not in Paper.)
         Recommend turning this on only if hyper_num_units becomes very large (>= 512)
-    """
+    '''
     self.num_units = num_units
     self.forget_bias = forget_bias
     self.use_recurrent_dropout = use_recurrent_dropout
@@ -279,16 +278,16 @@ class HyperLSTMCell(tf.nn.rnn_cell.RNNCell):
     self.hyper_num_units = hyper_num_units
     self.hyper_embedding_size = hyper_embedding_size
     self.hyper_use_recurrent_dropout = hyper_use_recurrent_dropout
+    self.batch_size = batch_size
+    self._input_size = input_size
 
     self.total_num_units = self.num_units + self.hyper_num_units
 
-    if self.use_layer_norm:
-      cell_fn = LayerNormLSTMCell
-    else:
-      cell_fn = LSTMCell
-    self.hyper_cell = cell_fn(hyper_num_units,
-      use_recurrent_dropout=hyper_use_recurrent_dropout,
-      dropout_keep_prob=dropout_keep_prob)
+    self.hyper_cell=LSTMCell(hyper_num_units, batch_size,
+                             input_size+num_units,
+                             use_recurrent_dropout=hyper_use_recurrent_dropout,
+                             use_layer_norm=use_layer_norm,
+                             dropout_keep_prob=dropout_keep_prob)
 
   @property
   def input_size(self):
@@ -300,88 +299,60 @@ class HyperLSTMCell(tf.nn.rnn_cell.RNNCell):
 
   @property
   def state_size(self):
-    return 2*self.total_num_units
-
-  def layer_norm(self, layer, scope="layer_norm"):
-    # wrapper for layer_norm
-    if self.use_layer_norm:
-      return layer_norm(layer, scope)
-    else:
-      return layer
-
-  def hyper_norm(self, layer, scope="hyper", use_bias=True):
-    num_units = self.num_units
-    embedding_size = self.hyper_embedding_size
-    # recurrent batch norm init trick (https://arxiv.org/abs/1603.09025).
-    init_gamma = 0.10 # cooijmans' da man.
-    with tf.variable_scope(scope):
-      zw = super_linear(self.hyper_output, embedding_size, init_w="constant",
-        weight_start=0.00, use_bias=True, bias_start=1.0, scope="zw")
-      alpha = super_linear(zw, num_units, init_w="constant",
-        weight_start=init_gamma / embedding_size, use_bias=False, scope="alpha")
-      result = tf.mul(alpha, layer)
-      if use_bias:
-        zb = super_linear(self.hyper_output, embedding_size, init_w="gaussian",
-          weight_start=0.01, use_bias=False, bias_start=0.0, scope="zb")
-        beta = super_linear(zb, num_units, init_w="constant",
-          weight_start=0.00, use_bias=False, scope="beta")
-        result = result + beta
-    return result
+    return tf.contrib.rnn.LSTMStateTuple(self.num_units+self.hyper_num_units,
+                                         self.num_units+self.hyper_num_units)
 
   def __call__(self, x, state, timestep = 0, scope=None):
     with tf.variable_scope(scope or type(self).__name__):
-      total_h, total_c = tf.split(1, 2, state)
-      h = total_h[:, 0:self.num_units]
+      total_c, total_h = state
       c = total_c[:, 0:self.num_units]
-      self.hyper_state = tf.concat(1, [total_h[:,self.num_units:], total_c[:,self.num_units:]])
+      h = total_h[:, 0:self.num_units]
+      hyper_state = tf.contrib.rnn.LSTMStateTuple(total_c[:,self.num_units:],
+                                                  total_h[:,self.num_units:])
 
-      x_size = x.get_shape().as_list()[1]
-      self._input_size = x_size
-
-      #w_init=lstm_ortho_initializer(1.0)
-      #w_init=orthogonal_initializer(1.0)
-      #w_init=tf.constant_initializer(0.0)
-      #w_init=tf.random_normal_initializer(stddev=0.01)
       w_init=None # uniform
 
       h_init=lstm_ortho_initializer(1.0)
-      #h_init=lstm_identity_initializer(1.0)
-      #h_init=tf.constant_initializer(0.0)
-      #h_init=tf.random_normal_initializer(stddev=0.01)
-      #h_init=None # uniform
+      
+      x_size = self._input_size
+      embedding_size = self.hyper_embedding_size
+      num_units = self.num_units
+      batch_size = self.batch_size
 
       W_xh = tf.get_variable('W_xh',
-        [x_size, 4*self.num_units], initializer=w_init)
+        [x_size, 4*num_units], initializer=w_init)
       W_hh = tf.get_variable('W_hh',
-        [self.num_units, 4*self.num_units], initializer=h_init)
+        [num_units, 4*num_units], initializer=h_init)
       bias = tf.get_variable('bias',
-        [4*self.num_units], initializer=tf.constant_initializer(0.0))
+        [4*num_units], initializer=tf.constant_initializer(0.0))
 
       # concatenate the input and hidden states for hyperlstm input
-      hyper_input = tf.concat(1, [x, h])
-      hyper_output, hyper_new_state = self.hyper_cell(hyper_input, self.hyper_state)
-      self.hyper_output = hyper_output
-      self.hyper_state = hyper_new_state
+      hyper_input = tf.concat_v2([x, h], 1)
+      hyper_output, hyper_new_state = self.hyper_cell(hyper_input, hyper_state)
 
       xh = tf.matmul(x, W_xh)
       hh = tf.matmul(h, W_hh)
 
       # split Wxh contributions
-      ix, jx, fx, ox = tf.split(1, 4, xh)
-      ix = self.hyper_norm(ix, 'hyper_ix', use_bias=False)
-      jx = self.hyper_norm(jx, 'hyper_jx', use_bias=False)
-      fx = self.hyper_norm(fx, 'hyper_fx', use_bias=False)
-      ox = self.hyper_norm(ox, 'hyper_ox', use_bias=False)
+      ix, jx, fx, ox = tf.split(xh, 4, 1)
+      ix = hyper_norm(ix, hyper_output, embedding_size, num_units, 'hyper_ix')
+      jx = hyper_norm(jx, hyper_output, embedding_size, num_units, 'hyper_jx')
+      fx = hyper_norm(fx, hyper_output, embedding_size, num_units, 'hyper_fx')
+      ox = hyper_norm(ox, hyper_output, embedding_size, num_units, 'hyper_ox')
 
       # split Whh contributions
-      ih, jh, fh, oh = tf.split(1, 4, hh)
-      ih = self.hyper_norm(ih, 'hyper_ih', use_bias=True)
-      jh = self.hyper_norm(jh, 'hyper_jh', use_bias=True)
-      fh = self.hyper_norm(fh, 'hyper_fh', use_bias=True)
-      oh = self.hyper_norm(oh, 'hyper_oh', use_bias=True)
+      ih, jh, fh, oh = tf.split(hh, 4, 1)
+      ih = hyper_norm(ih, hyper_output, embedding_size, num_units, 'hyper_ih')
+      jh = hyper_norm(jh, hyper_output, embedding_size, num_units, 'hyper_jh')
+      fh = hyper_norm(fh, hyper_output, embedding_size, num_units, 'hyper_fh')
+      oh = hyper_norm(oh, hyper_output, embedding_size, num_units, 'hyper_oh')
 
       # split bias
-      ib, jb, fb, ob = tf.split(0, 4, bias) # bias is to be broadcasted.
+      ib, jb, fb, ob = tf.split(bias, 4, 0) # bias is to be broadcasted.
+      ib = hyper_bias(ib, hyper_output, embedding_size, num_units, 'hyper_ib')
+      jb = hyper_bias(jb, hyper_output, embedding_size, num_units, 'hyper_jb')
+      fb = hyper_bias(fb, hyper_output, embedding_size, num_units, 'hyper_fb')
+      ob = hyper_bias(ob, hyper_output, embedding_size, num_units, 'hyper_ob')
 
       # i = input_gate, j = new_input, f = forget_gate, o = output_gate
       i = ix + ih + ib
@@ -389,10 +360,10 @@ class HyperLSTMCell(tf.nn.rnn_cell.RNNCell):
       f = fx + fh + fb
       o = ox + oh + ob
 
-      i = self.layer_norm(i, 'ln_i')
-      j = self.layer_norm(j, 'ln_j')
-      f = self.layer_norm(f, 'ln_f')
-      o = self.layer_norm(o, 'ln_o')
+      if self.use_layer_norm:
+        concat = tf.concat_v2([i, j, f, o], 1)
+        concat = layer_norm_all(concat, batch_size, 4, num_units, 'ln_all')
+        i, j, f, o = tf.split(concat, 4, 1)
 
       if self.use_recurrent_dropout:
         g = tf.nn.dropout(tf.tanh(j), self.dropout_keep_prob)
@@ -400,174 +371,13 @@ class HyperLSTMCell(tf.nn.rnn_cell.RNNCell):
         g = tf.tanh(j) 
 
       new_c = c*tf.sigmoid(f+self.forget_bias) + tf.sigmoid(i)*g
-      new_h = tf.tanh(self.layer_norm(new_c, 'ln_c')) * tf.sigmoid(o)
+      if self.use_layer_norm:
+        new_h = tf.tanh(layer_norm(new_c, num_units, 'ln_c')) * tf.sigmoid(o)
+      else:
+        new_h = tf.tanh(new_c) * tf.sigmoid(o)
     
-      hyper_h, hyper_c = tf.split(1, 2, hyper_new_state)
-      new_total_h = tf.concat(1, [new_h, hyper_h])
-      new_total_c = tf.concat(1, [new_c, hyper_c])
-      new_total_state = tf.concat(1, [new_total_h, new_total_c])
-    return new_h, new_total_state
+      hyper_c, hyper_h = hyper_new_state
+      new_total_c = tf.concat_v2([new_c, hyper_c], 1)
+      new_total_h = tf.concat_v2([new_h, hyper_h], 1)
 
-class LayerNormRNNCell(tf.nn.rnn_cell.RNNCell):
-  """
-  Layer-Norm, with Ortho Initialization, vanilla RNN cell.
-  """
-
-  def __init__(self, num_units, activation=tf.tanh):
-    self.num_units = num_units
-    self.activation = activation
-
-  @property
-  def input_size(self):
-    return self.num_units
-
-  @property
-  def output_size(self):
-    return self.num_units
-
-  @property
-  def state_size(self):
-    return self.num_units
-
-  def __call__(self, x, state, timestep = 0, scope=None):
-    with tf.variable_scope(scope or type(self).__name__):
-      h = state
-
-      h_size = self.num_units
-      x_size = x.get_shape().as_list()[1]
-
-      #w_init=orthogonal_initializer(1.0)
-      #w_init=tf.constant_initializer(0.0)
-      #w_init=tf.random_normal_initializer(stddev=0.01)
-      w_init=None # uniform
-
-      h_init=orthogonal_initializer(1.0)
-      #h_init=tf.constant_initializer(0.0)
-      #h_init=tf.random_normal_initializer(stddev=0.01)
-      #h_init=None # uniform
-
-      W_xh = tf.get_variable('W_xh',
-        [x_size, self.num_units], initializer=w_init)
-      W_hh = tf.get_variable('W_hh',
-        [self.num_units, self.num_units], initializer=h_init)
-      # no bias, since there's a bias thing inside layer norm
-      # and we don't wanna double task variables.
-
-      concat = tf.concat(1, [x, h]) # concat for speed.
-      W_full = tf.concat(0, [W_xh, W_hh])
-      concat = tf.matmul(concat, W_full)
-
-      new_h = self.activation(layer_norm(concat, 'ln_h'))
-    
-    return new_h, new_h
-
-class FastRNNCell(tf.nn.rnn_cell.RNNCell):
-  """
-  Layer-Norm, with Ortho Initialization, Fast RNN cell.
-  Alpha version, probably bugs, pls test and see if fixin' needed.
-  
-  Based on:
-  https://arxiv.org/abs/1610.06258
-  Assumes S = 1, that was my understanding. (pls write more clearly ...)
-  As usual, calling FastRNNCell will return two things: output, state
-  
-  output is the current hidden state of the RNN, dimensions batch_size x num_units
-  
-  state will be a packed tensor containing the previous max_history hidden states
-  the previous max_history will be scaled gradually by lambda factor.
-  
-  state's dimensions will be batch_size x [num_units * max_history]
-  
-  initially, all the previous history will be zeroed out.
-  """
-
-  def __init__(self, num_units, eta_factor=0.5, lambda_factor=0.90,
-               activation=tf.nn.relu, inner_steps=1, max_history=20):
-    """Initialize the FastRNN cell.
-    Args:
-      num_units: int, The number of units in the LSTM cell.
-      eta_factor: float, default 0.5
-      lambda_factor: float, default 0.90 (try to choose a better greek character next time that is not a python keyword...)
-      activation: default tf.nn.relu.  Feel free to try tf.tanh
-      inner_steps: default 1, number of inner steps of fast rnn
-      max_history: int, default 20. Only considers up to previous [20] states
-    """
-    self.num_units = num_units
-    self.eta = eta_factor
-    self.lam = np.sqrt(lambda_factor) # sqrt to be consistent w/ the paper's def
-    self.activation = activation
-    self.inner_steps = inner_steps
-    self.max_history=max_history
-
-  @property
-  def input_size(self):
-    return self.num_units
-
-  @property
-  def output_size(self):
-    return self.num_units
-
-  @property
-  def state_size(self):
-    return self.max_history*self.num_units
-
-  def __call__(self, x, raw_state, timestep = 0, scope=None):
-    with tf.variable_scope(scope or type(self).__name__):
-      batch_size = x.get_shape().as_list()[0]
-      max_history = self.max_history
-      h_size = self.num_units
-      x_size = x.get_shape().as_list()[1]
-
-      state = tf.reshape(raw_state, [batch_size, max_history, h_size])
-      h = state[:, 0, :] # get most recent hidden state
-
-      state = self.lam*state # decrease everything by the lambda factor
-
-      #w_init=orthogonal_initializer(1.0)
-      #w_init=tf.constant_initializer(0.0)
-      #w_init=tf.random_normal_initializer(stddev=0.01)
-      w_init=None # uniform
-
-      h_init=orthogonal_initializer(1.0)
-      #h_init=tf.constant_initializer(0.0)
-      #h_init=tf.random_normal_initializer(stddev=0.01)
-      #h_init=None # uniform
-
-      W_xh = tf.get_variable('W_xh',
-        [x_size, self.num_units], initializer=w_init)
-      W_hh = tf.get_variable('W_hh',
-        [self.num_units, self.num_units], initializer=h_init)
-      # no bias, since there's a bias thing inside layer norm
-      # and we don't wanna double task variables.
-
-      concat = tf.concat(1, [x, h]) # concat for speed.
-      W_full = tf.concat(0, [W_xh, W_hh])
-
-      # preliminary vector (eq 2 has no non-linearity, I go with that)
-      h0 = tf.matmul(concat, W_full)
-      
-      h0 = self.activation(h0)
-      
-      h0 = tf.reshape(h0, [batch_size, 1, h_size])
-      
-      # eq4, already scaled by sqrt(lambda_factor) in both lines
-      h1 = tf.batch_matmul(h0, tf.transpose(state, perm=[0, 2, 1]))
-      h1 = tf.batch_matmul(h1, state)
-
-      h0 = tf.reshape(h0, [batch_size, h_size])
-      new_h = tf.reshape(h1, [batch_size, h_size])
-
-      # combination of eq2/eq5 and eq4:
-      for i in range(self.inner_steps):
-        new_h = h0+self.eta*new_h
-        new_h = self.activation(layer_norm(new_h, 'ln_h', reuse=(True if i > 0 else False)))
-
-      h_insert = tf.reshape(new_h, [batch_size, 1, h_size])
-      state = tf.concat(1, [h_insert, state])  # put in most recent state in the front
-      state = state[:, 0:self.max_history, :]  # kick out the last hidden state
-
-      state = tf.reshape(state, [batch_size, max_history*h_size])
-    
-    return new_h, state
-
-
+    return new_h, tf.contrib.rnn.LSTMStateTuple(new_total_c, new_total_h)
