@@ -1,11 +1,7 @@
 '''
-
 supercell
-
 https://github.com/hardmaru/supercell/
-
 inspired by http://supercell.jp/
-
 '''
 
 import tensorflow as tf
@@ -31,26 +27,6 @@ def lstm_ortho_initializer(scale=1.0):
     t[:, size_h*3:] = orthogonal([size_x, size_h])*scale
     return tf.constant(t, dtype)
   return _initializer
-
-def layer_norm_all_op_get_var(num_units, base, scope='ln_gamma'):
-  return tf.get_variable(scope, [base*num_units], initializer=tf.constant_initializer(1.0))
-
-@function.Defun(*[tf.float32] * 2 + [tf.int32]*3, func_name='layer_norm_all_op')
-def layer_norm_all_op(h, gamma, batch_size, base, num_units):
-  # Layer Norm (faster version)
-  #
-  # Performas layer norm on multiple base at once (ie, i, g, j, o for lstm)
-  #
-  # Reshapes h in to perform layer norm in parallel
-  h_reshape = tf.reshape(h, [batch_size, base, num_units])
-  mean = tf.reduce_mean(h_reshape, [2], keep_dims=True)
-  var = tf.reduce_mean(tf.square(h_reshape - mean), [2], keep_dims=True)
-  epsilon = tf.constant(1e-3)
-  rstd = tf.rsqrt(var + epsilon)
-  h_reshape = (h_reshape - mean) * rstd
-  # reshape back to original
-  h = tf.reshape(h_reshape, [batch_size, base * num_units])
-  return gamma * h
 
 def layer_norm_all(h, batch_size, base, num_units, scope="layer_norm", reuse=False, gamma_start=1.0, epsilon = 1e-3):
   # Layer Norm (faster version, but not using defun)
@@ -122,7 +98,6 @@ def hyper_norm(layer, hyper_output, embedding_size, num_units,
   HyperNetwork norm operator
   
   provides context-dependent weights
-
   layer: layer to apply operation on
   hyper_output: output of the hypernetwork cell at time t
   embedding_size: embedding size of the output vector (see paper)
@@ -144,7 +119,6 @@ def hyper_bias(layer, hyper_output, embedding_size, num_units,
   HyperNetwork norm operator
   
   provides context-dependent bias
-
   layer: layer to apply operation on
   hyper_output: output of the hypernetwork cell at time t
   embedding_size: embedding size of the output vector (see paper)
@@ -169,7 +143,7 @@ class LSTMCell(tf.contrib.rnn.RNNCell):
   https://github.com/LeavesBreathe/tensorflow_with_latest_papers
   """
 
-  def __init__(self, num_units, batch_size=1, input_size=1, forget_bias=1.0, use_layer_norm=False,
+  def __init__(self, num_units, forget_bias=1.0, use_layer_norm=False,
     use_recurrent_dropout=False, dropout_keep_prob=0.90):
     """Initialize the Layer Norm LSTM cell.
     Args:
@@ -183,12 +157,6 @@ class LSTMCell(tf.contrib.rnn.RNNCell):
     self.use_layer_norm = use_layer_norm
     self.use_recurrent_dropout = use_recurrent_dropout
     self.dropout_keep_prob = dropout_keep_prob
-    self.batch_size = batch_size
-    self._input_size = input_size
-
-  @property
-  def input_size(self):
-    return self._input_size
 
   @property
   def output_size(self):
@@ -204,8 +172,8 @@ class LSTMCell(tf.contrib.rnn.RNNCell):
 
       h_size = self.num_units
       
-      batch_size = self.batch_size
-      x_size = self._input_size
+      batch_size = x.get_shape().as_list()[0]
+      x_size = x.get_shape().as_list()[1]
       
       w_init=None # uniform
 
@@ -217,12 +185,12 @@ class LSTMCell(tf.contrib.rnn.RNNCell):
       W_hh = tf.get_variable('W_hh_i',
         [self.num_units, 4*self.num_units], initializer=h_init)
 
-      W_full = tf.concat_v2([W_xh, W_hh], 0)
+      W_full = tf.concat([W_xh, W_hh], 0)
 
       bias = tf.get_variable('bias',
         [4 * self.num_units], initializer=tf.constant_initializer(0.0))
 
-      concat = tf.concat_v2([x, h], 1) # concat for speed.
+      concat = tf.concat([x, h], 1) # concat for speed.
       concat = tf.matmul(concat, W_full) + bias
       
       # new way of doing layer norm (faster)
@@ -253,7 +221,7 @@ class HyperLSTMCell(tf.contrib.rnn.RNNCell):
   https://arxiv.org/abs/1609.09106
   '''
 
-  def __init__(self, num_units, batch_size=1, input_size=1, forget_bias=1.0,
+  def __init__(self, num_units, forget_bias=1.0,
     use_recurrent_dropout=False, dropout_keep_prob=0.90, use_layer_norm=True,
     hyper_num_units=128, hyper_embedding_size=16,
     hyper_use_recurrent_dropout=False):
@@ -281,20 +249,13 @@ class HyperLSTMCell(tf.contrib.rnn.RNNCell):
     self.hyper_num_units = hyper_num_units
     self.hyper_embedding_size = hyper_embedding_size
     self.hyper_use_recurrent_dropout = hyper_use_recurrent_dropout
-    self.batch_size = batch_size
-    self._input_size = input_size
 
     self.total_num_units = self.num_units + self.hyper_num_units
 
-    self.hyper_cell=LSTMCell(hyper_num_units, batch_size,
-                             input_size+num_units,
+    self.hyper_cell=LSTMCell(hyper_num_units,
                              use_recurrent_dropout=hyper_use_recurrent_dropout,
                              use_layer_norm=use_layer_norm,
                              dropout_keep_prob=dropout_keep_prob)
-
-  @property
-  def input_size(self):
-    return self._input_size
 
   @property
   def output_size(self):
@@ -317,10 +278,10 @@ class HyperLSTMCell(tf.contrib.rnn.RNNCell):
 
       h_init=lstm_ortho_initializer(1.0)
       
-      x_size = self._input_size
+      x_size = x.get_shape().as_list()[1]
       embedding_size = self.hyper_embedding_size
       num_units = self.num_units
-      batch_size = self.batch_size
+      batch_size = x.get_shape().as_list()[0]
 
       W_xh = tf.get_variable('W_xh',
         [x_size, 4*num_units], initializer=w_init)
@@ -330,7 +291,7 @@ class HyperLSTMCell(tf.contrib.rnn.RNNCell):
         [4*num_units], initializer=tf.constant_initializer(0.0))
 
       # concatenate the input and hidden states for hyperlstm input
-      hyper_input = tf.concat_v2([x, h], 1)
+      hyper_input = tf.concat([x, h], 1)
       hyper_output, hyper_new_state = self.hyper_cell(hyper_input, hyper_state)
 
       xh = tf.matmul(x, W_xh)
@@ -364,7 +325,7 @@ class HyperLSTMCell(tf.contrib.rnn.RNNCell):
       o = ox + oh + ob
 
       if self.use_layer_norm:
-        concat = tf.concat_v2([i, j, f, o], 1)
+        concat = tf.concat([i, j, f, o], 1)
         concat = layer_norm_all(concat, batch_size, 4, num_units, 'ln_all')
         i, j, f, o = tf.split(concat, 4, 1)
 
@@ -380,7 +341,7 @@ class HyperLSTMCell(tf.contrib.rnn.RNNCell):
         new_h = tf.tanh(new_c) * tf.sigmoid(o)
     
       hyper_c, hyper_h = hyper_new_state
-      new_total_c = tf.concat_v2([new_c, hyper_c], 1)
-      new_total_h = tf.concat_v2([new_h, hyper_h], 1)
+      new_total_c = tf.concat([new_c, hyper_c], 1)
+      new_total_h = tf.concat([new_h, hyper_h], 1)
 
     return new_h, tf.contrib.rnn.LSTMStateTuple(new_total_c, new_total_h)
