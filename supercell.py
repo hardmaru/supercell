@@ -28,7 +28,7 @@ def lstm_ortho_initializer(scale=1.0):
     return tf.constant(t, dtype)
   return _initializer
 
-def layer_norm_all(h, batch_size, base, num_units, scope="layer_norm", reuse=False, gamma_start=1.0, epsilon = 1e-3):
+def layer_norm_all(h, batch_size, base, num_units, scope="layer_norm", reuse=False, gamma_start=1.0, epsilon = 1e-3, use_bias=True):
   # Layer Norm (faster version, but not using defun)
   #
   # Performas layer norm on multiple base at once (ie, i, g, j, o for lstm)
@@ -46,9 +46,13 @@ def layer_norm_all(h, batch_size, base, num_units, scope="layer_norm", reuse=Fal
     if reuse == True:
       tf.get_variable_scope().reuse_variables()
     gamma = tf.get_variable('ln_gamma', [4*num_units], initializer=tf.constant_initializer(gamma_start))
+    if use_bias:
+      beta = tf.get_variable('ln_beta', [4*num_units], initializer=tf.constant_initializer(0.0))
+  if use_bias:
+    return gamma*h + beta
   return gamma * h
 
-def layer_norm(x, num_units, scope="layer_norm", reuse=False, gamma_start=1.0, epsilon = 1e-3):
+def layer_norm(x, num_units, scope="layer_norm", reuse=False, gamma_start=1.0, epsilon = 1e-3, use_bias=True):
   axes = [1]
   mean = tf.reduce_mean(x, axes, keep_dims=True)
   x_shifted = x-mean
@@ -58,7 +62,11 @@ def layer_norm(x, num_units, scope="layer_norm", reuse=False, gamma_start=1.0, e
     if reuse == True:
       tf.get_variable_scope().reuse_variables()
     gamma = tf.get_variable('ln_gamma', [num_units], initializer=tf.constant_initializer(gamma_start))
+    if use_bias:
+      beta = tf.get_variable('ln_beta', [num_units], initializer=tf.constant_initializer(0.0))
   output = gamma*(x_shifted)*inv_std
+  if use_bias:
+    output = output + beta
   return output
 
 def super_linear(x, output_size, scope=None, reuse=False,
